@@ -10,10 +10,16 @@ const CONFIG = {
 let spreadsheetCache;
 let folderCache;
 
+const PERSONNEL_SHEETS = ['PERSONAL', 'EMPLEADOS', 'USUARIOS'];
+const PERSONNEL_CACHE_SECONDS = 300;
+const DASHBOARD_CACHE_SECONDS = 120;
+
 function doGet(e) {
   try {
     const action = String(e.parameter.action || '').toLowerCase();
     if (action === 'ticket') return json_(getTicket_(e.parameter.folio || ''));
+    if (action === 'personnel') return json_(getPersonnel_());
+    if (action === 'dashboard') return json_(getDashboard_());
     return json_({ ok: false, message: 'Acción no reconocida.' });
   } catch (error) {
     return json_({ ok: false, message: error.message });
@@ -45,6 +51,79 @@ function tickets_() {
   const sheet = ss_().getSheetByName(CONFIG.ticketsSheet);
   if (!sheet) throw new Error('No existe la hoja TICKETS.');
   return sheet;
+}
+
+function personnel_() {
+  for (const name of PERSONNEL_SHEETS) {
+    const sheet = ss_().getSheetByName(name);
+    if (sheet) return sheet;
+  }
+  const candidate = ss_().getSheets().find(sheet => {
+    const names = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getDisplayValues()[0]
+      .map(value => String(value).trim().toLowerCase());
+    return names.some(name => /nombre|empleado/.test(name)) && names.some(name => /rol|tipo|puesto|perfil/.test(name));
+  });
+  if (candidate) return candidate;
+  throw new Error('No encuentro la hoja de personal. Usa una pestaña llamada PERSONAL, EMPLEADOS o USUARIOS.');
+}
+
+function value_(row, headers, names) {
+  for (const name of names) {
+    if (headers[name] !== undefined) return String(row[headers[name]] || '').trim();
+  }
+  return '';
+}
+
+function getPersonnel_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get('siti_personnel_v1');
+  if (cached) return JSON.parse(cached);
+
+  const sheet = personnel_();
+  const values = sheet.getDataRange().getDisplayValues();
+  if (values.length < 2) throw new Error('La hoja de personal no tiene registros.');
+  const headers = values[0].reduce((map, name, index) => {
+    map[String(name).trim().toLowerCase()] = index;
+    return map;
+  }, {});
+  const people = values.slice(1).map(row => {
+    const id = value_(row, headers, ['id', 'id empleado', 'id de empleado', 'no. empleado', 'número de empleado']);
+    const name = value_(row, headers, ['nombre', 'nombre completo', 'empleado']);
+    const role = value_(row, headers, ['rol', 'tipo', 'puesto', 'perfil']).toLowerCase();
+    const status = value_(row, headers, ['estatus', 'activo', 'estado']).toLowerCase();
+    return { id, name, role, status };
+  }).filter(person => person.id && person.name && !/inactivo|baja|no|false|0/.test(person.status));
+
+  const result = {
+    ok: true,
+    operators: people.filter(person => /operador|producci/.test(person.role)).map(({ id, name }) => ({ id, name })),
+    technicians: people.filter(person => /t[eé]cnico|mantenimiento|mec[aá]nico/.test(person.role)).map(({ id, name }) => ({ id, name }))
+  };
+  if (!result.operators.length || !result.technicians.length) {
+    throw new Error('Revisa la columna Rol de PERSONAL: debe indicar Operador o Técnico.');
+  }
+  cache.put('siti_personnel_v1', JSON.stringify(result), PERSONNEL_CACHE_SECONDS);
+  return result;
+}
+
+function getDashboard_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get('siti_dashboard_v1');
+  if (cached) return JSON.parse(cached);
+  const sheet = tickets_();
+  const values = sheet.getDataRange().getDisplayValues();
+  const headers = headers_(sheet);
+  const text = (row, name) => headers[name] === undefined ? '' : String(row[headers[name]] || '').trim();
+  const rows = values.slice(1).filter(row => text(row, 'Folio')).map(row => ({
+    folio: text(row, 'Folio'), status: text(row, 'Estatus') || 'Abierto', openedDate: text(row, 'Fecha apertura'), openedTime: text(row, 'Hora apertura'),
+    closedDate: text(row, 'Fecha cierre'), closedTime: text(row, 'Hora cierre'), area: text(row, 'Área'), machine: text(row, 'Máquina'),
+    operator: text(row, 'Operador'), technician: text(row, 'Técnico asignado'), impact: text(row, 'Prioridad'), failureType: text(row, 'Tipo de falla'),
+    rootCause: text(row, 'Causa raíz'), responseMinutes: Number(text(row, 'Tiempo de respuesta (min)')) || null,
+    repairMinutes: Number(text(row, 'Tiempo de reparación (min)')) || null, stoppedMinutes: Number(text(row, 'Tiempo detenido (min)')) || null
+  }));
+  const result = { ok: true, generatedAt: dateInfo_().dateTime, tickets: rows };
+  cache.put('siti_dashboard_v1', JSON.stringify(result), DASHBOARD_CACHE_SECONDS);
+  return result;
 }
 
 function headers_(sheet) {
@@ -141,6 +220,7 @@ function openTicket_(body) {
     set_(row, headers, 'Parte que falla', body.part || ''); set_(row, headers, 'Tipo de falla', body.failureType || ''); set_(row, headers, 'Descripción de falla', body.description);
     set_(row, headers, 'Foto apertura (Drive)', photo); set_(row, headers, 'Liga de ticket', link);
     sheet.appendRow(row);
+    CacheService.getScriptCache().remove('siti_dashboard_v1');
 
     return {
       ok: true,
@@ -234,6 +314,7 @@ function closeTicket_(body) {
   set_(row, headers, '¿Máquina liberada / probada?', 'Sí'); set_(row, headers, 'ID operador recibe', body.receiverOperatorId); set_(row, headers, 'Operador recibe máquina', body.receiverOperatorName); set_(row, headers, 'Validación de liberación', body.releaseValidation || '');
 
   sheet.getRange(dataIndex + 1, 1, 1, sheet.getLastColumn()).setValues([row]);
+  CacheService.getScriptCache().remove('siti_dashboard_v1');
   const link = row[headers['Liga de ticket']] || `${CONFIG.appUrl}?ticket=${encodeURIComponent(body.folio)}`;
   return {
     ok: true,
