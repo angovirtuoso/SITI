@@ -146,7 +146,19 @@ function openTicket_(body) {
       ok: true,
       folio: ticket.folio,
       ticketUrl: link,
-      shareText: `🚨 Ticket abierto ${ticket.folio}\nMotivo: ${body.description}\nÁrea: ${area}\nMáquina: ${machineName}\nFecha y hora: ${now.dateTime}\nCerrar ticket: ${link}`
+      shareText: `🚨 Ticket abierto ${ticket.folio}\nMotivo: ${body.description}\nÁrea: ${area}\nMáquina: ${machineName}\nFecha y hora: ${now.dateTime}\nCerrar ticket: ${link}`,
+      card: {
+        status: 'Abierto',
+        folio: ticket.folio,
+        area,
+        machine: machineName,
+        impact,
+        failureType: body.failureType || 'Sin clasificar',
+        part: body.part || 'Sin especificar',
+        description: body.description,
+        operator: operatorName,
+        openedAt: now.dateTime
+      }
     };
   } finally {
     lock.releaseLock();
@@ -227,6 +239,33 @@ function closeTicket_(body) {
     ok: true,
     folio: body.folio,
     ticketUrl: link,
-    shareText: `✅ Ticket cerrado ${body.folio}\nÁrea: ${row[headers.Área]}\nMáquina: ${row[headers.Máquina]}\nCorrección: ${body.correction}\nMáquina liberada y probada: Sí\nCerrado: ${now.dateTime}`
+    shareText: `✅ Ticket cerrado ${body.folio}\nÁrea: ${row[headers.Área]}\nMáquina: ${row[headers.Máquina]}\nCorrección: ${body.correction}\nMáquina liberada y probada: Sí\nCerrado: ${now.dateTime}`,
+    card: {
+      status: 'Cerrado',
+      folio: body.folio,
+      area: row[headers.Área],
+      machine: row[headers.Máquina],
+      impact: row[headers.Prioridad],
+      failureType: row[headers['Tipo de falla']],
+      part: row[headers['Parte que falla']],
+      description: row[headers['Descripción de falla']],
+      operator: row[headers.Operador],
+      openedAt: `${row[headers['Fecha apertura']]} ${row[headers['Hora apertura']]}`.trim(),
+      receivedAt: received.dateTime,
+      repairStart: repair.dateTime,
+      closedAt: now.dateTime,
+      technician: body.technicianName,
+      workType: body.workType,
+      rootCause: body.rootCause || 'Por determinar',
+      correction: body.correction,
+      partsUsed: body.partsUsed || 'Sin refacciones registradas',
+      recommendations: body.recommendations || 'Sin comentarios adicionales',
+      receiver: body.receiverOperatorName,
+      releaseValidation: body.releaseValidation || 'Máquina liberada y probada',
+      responseMinutes: mins_(openDate, receivedAt),
+      repairMinutes: mins_(repairStart, nowDate),
+      stoppedMinutes: mins_(openDate, nowDate),
+      released: 'Sí'
+    }
   };
 }
